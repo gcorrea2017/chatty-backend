@@ -20,8 +20,16 @@ const helmet_1 = __importDefault(require("helmet"));
 const hpp_1 = __importDefault(require("hpp"));
 const compression_1 = __importDefault(require("compression"));
 const cookie_session_1 = __importDefault(require("cookie-session"));
+const http_status_codes_1 = __importDefault(require("http-status-codes"));
+const socket_io_1 = require("socket.io");
+const redis_1 = require("redis");
+const redis_adapter_1 = require("@socket.io/redis-adapter");
 require("express-async-errors");
-const SERVER_PORT = 5000;
+const config_1 = require("./config");
+const routes_1 = __importDefault(require("./routes"));
+const error_handlers_1 = require("./shared/globals/helpers/error-handlers");
+const SERVER_PORT = 3000;
+const log = config_1.config.createLogger('server');
 class ChattyServer {
     constructor(app) {
         this.app = app;
@@ -36,14 +44,14 @@ class ChattyServer {
     securityMiddleware(app) {
         app.use((0, cookie_session_1.default)({
             name: 'session',
-            keys: ['test1', 'test2'],
+            keys: [config_1.config.SECRET_KEY_ONE, config_1.config.SECRET_KEY_TWO],
             maxAge: 24 * 7 * 3600000,
-            secure: false
+            secure: config_1.config.NODE_ENV !== 'development'
         }));
         app.use((0, hpp_1.default)());
         app.use((0, helmet_1.default)());
         app.use((0, cors_1.default)({
-            origin: '*',
+            origin: config_1.config.CLIENT_URL,
             credentials: true,
             optionsSuccessStatus: 200,
             methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
@@ -54,24 +62,57 @@ class ChattyServer {
         app.use((0, express_1.json)({ limit: '50mb' }));
         app.use((0, express_1.urlencoded)({ extended: true, limit: '50mb' }));
     }
-    routesMiddleware(app) { }
-    globalErrorHandler(app) { }
+    routesMiddleware(app) {
+        (0, routes_1.default)(app);
+    }
+    globalErrorHandler(app) {
+        app.all('*', (req, res) => {
+            res.status(http_status_codes_1.default.NOT_FOUND).json({ message: `${req.originalUrl} not found` });
+        });
+        app.use((error, _req, res, next) => {
+            log.error(error);
+            if (error instanceof error_handlers_1.CustomError) {
+                return res.status(error.statusCode).json(error.serializeErrors());
+            }
+            next();
+        });
+    }
     startServer(app) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 const httpServer = new http_1.default.Server(app);
+                const SocketIO = yield this.createSocketIO(httpServer);
                 this.startHttpServer(httpServer);
+                this.socketIOConnectios(SocketIO);
             }
             catch (error) {
-                console.log(error);
+                log.error(error);
             }
         });
     }
-    createSocketIO(httpServer) { }
-    startHttpServer(httpServer) {
-        httpServer.listen(SERVER_PORT, () => {
-            console.log(`Server running on ${SERVER_PORT}`);
+    createSocketIO(httpServer) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const io = new socket_io_1.Server(httpServer, {
+                cors: {
+                    origin: config_1.config.CLIENT_URL,
+                    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+                }
+            });
+            const pubClient = (0, redis_1.createClient)({ url: config_1.config.REDIS_HOST });
+            const subClient = pubClient.duplicate();
+            yield Promise.all([pubClient.connect(), subClient.connect()]);
+            io.adapter((0, redis_adapter_1.createAdapter)(pubClient, subClient));
+            return io;
         });
+    }
+    startHttpServer(httpServer) {
+        log.info(`Server has started with process ${process.pid}`);
+        httpServer.listen(SERVER_PORT, () => {
+            log.info(`Server running on port ${SERVER_PORT}`);
+        });
+    }
+    socketIOConnectios(io) {
+        log.info('socketIOConnectios');
     }
 }
 exports.ChattyServer = ChattyServer;
